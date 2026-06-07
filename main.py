@@ -2,6 +2,7 @@ import os
 import threading
 import uuid
 import logging
+import html
 from datetime import datetime, timedelta
 from flask import Flask
 import psycopg2
@@ -88,16 +89,16 @@ def admin_only(func):
 @admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "👋 *Bienvenido al Gestor de Licencias*\n\n"
+        "👋 <b>Bienvenido al Gestor de Licencias</b>\n\n"
         "Comandos disponibles:\n"
         "• /generar [tipo/dias] [nota] - Generar nueva licencia\n"
-        "  Ej: `/generar 7 Juan` o `/generar vitalicia Pedro`\n"
+        "  Ej: <code>/generar 7 Juan</code> o <code>/generar vitalicia Pedro</code>\n"
         "• /status [clave] - Ver estado de una licencia\n"
         "• /activar [clave] - Activar licencia\n"
         "• /desactivar [clave] - Suspender licencia\n"
         "• /ayuda - Mostrar este panel"
     )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='HTML')
 
 @admin_only
 async def generar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,13 +146,13 @@ async def generar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             
             res_text = (
-                "✅ *Licencia Generada*\n\n"
-                f"🔑 *Clave:* `{clave}`\n"
-                f"📅 *Duración:* {duracion_tipo} ({dias} días)\n"
-                f"👤 *Cliente:* {nota_cliente}\n"
-                f"⏳ *Expira:* {fecha_expiracion.strftime('%Y-%m-%d') if fecha_expiracion else 'Nunca'}"
+                "✅ <b>Licencia Generada</b>\n\n"
+                f"🔑 <b>Clave:</b> <code>{html.escape(clave)}</code>\n"
+                f"📅 <b>Duración:</b> {html.escape(duracion_tipo)} ({dias} días)\n"
+                f"👤 <b>Cliente:</b> {html.escape(nota_cliente)}\n"
+                f"⏳ <b>Expira:</b> {fecha_expiracion.strftime('%Y-%m-%d') if fecha_expiracion else 'Nunca'}"
             )
-            await update.message.reply_text(res_text, parse_mode='Markdown')
+            await update.message.reply_text(res_text, parse_mode='HTML')
     except Exception as e:
         logger.error(f"Error al generar licencia: {e}")
         await update.message.reply_text("Error interno al generar la licencia.")
@@ -174,12 +175,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c, t, s, n, e = row
                 exp_str = e.strftime('%Y-%m-%d') if e else 'Nunca'
                 await update.message.reply_text(
-                    f"📊 *Estado de Licencia*\n\n"
-                    f"🔑 Clave: `{c}`\n"
-                    f"📝 Nota: {n}\n"
-                    f"⚙️ Estado: {s.upper()}\n"
+                    f"📊 <b>Estado de Licencia</b>\n\n"
+                    f"🔑 Clave: <code>{html.escape(c)}</code>\n"
+                    f"📝 Nota: {html.escape(n if n else 'N/A')}\n"
+                    f"⚙️ Estado: {html.escape(s.upper())}\n"
                     f"⏳ Expira: {exp_str}",
-                    parse_mode='Markdown'
+                    parse_mode='HTML'
                 )
             else:
                 await update.message.reply_text("❌ Licencia no encontrada.")
