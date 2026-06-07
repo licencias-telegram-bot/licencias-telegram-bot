@@ -149,12 +149,18 @@ async def vertodas(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     exp_str = 'Nunca'
                 
-                estado_emoji = "✅" if s == 'activa' else "🚫"
+                if s == 'activa':
+                    estado_emoji = "✅"
+                elif s == 'expirada':
+                    estado_emoji = "⚠️"
+                else:
+                    estado_emoji = "🚫"
+
                 mensaje += (
                     f"{estado_emoji} <b>Clave:</b> <code>{html.escape(c)}</code>\n"
                     f"👤 <b>Cliente:</b> {html.escape(n if n else 'N/A')}\n"
                     f"⏳ <b>Expira:</b> {exp_str}\n"
-                    f"⚙️ <b>Tipo:</b> {html.escape(t)}\n"
+                    f"⚙️ <b>Estado:</b> {html.escape(s.upper())}\n"
                     "----------------------------\n"
                 )
                 
@@ -168,6 +174,42 @@ async def vertodas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error en vertodas: {e}")
         await update.message.reply_text("Error al obtener las licencias.")
+    finally:
+        db_pool.putconn(conn)
+
+# --- TAREA DE SEGUNDO PLANO: VERIFICAR EXPIRACIONES ---
+async def check_expirations_job(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Iniciando chequeo automático de expiraciones...")
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            # Buscar licencias activas que ya pasaron su fecha de expiración
+            cur.execute("""
+                UPDATE licencias 
+                SET estado = 'expirada' 
+                WHERE estado = 'activa' 
+                AND fecha_expiracion IS NOT NULL 
+                AND fecha_expiracion <= NOW()
+                RETURNING clave_licencia, cliente_nota;
+            """)
+            expired_licenses = cur.fetchall()
+            conn.commit()
+            
+            for clave, nota in expired_licenses:
+                msg = (
+                    "⚠️ <b>LICENCIA CADUCADA</b>\n\n"
+                    f"La licencia <code>{html.escape(clave)}</code> ha expirado.\n"
+                    f"👤 <b>Cliente:</b> {html.escape(nota if nota else 'N/A')}\n"
+                    f"📅 <b>Estado:</b> Marcada como EXPIRADA automáticamente."
+                )
+                try:
+                    await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode='HTML')
+                    logger.info(f"Notificación enviada para licencia {clave}")
+                except Exception as send_err:
+                    logger.error(f"No se pudo enviar notificación a {ADMIN_ID}: {send_err}")
+                    
+    except Exception as e:
+        logger.error(f"Error en el proceso de verificación de expiraciones: {e}")
     finally:
         db_pool.putconn(conn)
 
@@ -302,6 +344,11 @@ if __name__ == '__main__':
 
     # Iniciar Bot de Telegram
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Programar chequeo de expiraciones cada 30 minutos (1800 segundos)
+    if application.job_queue:
+        application.job_queue.run_repeating(check_expirations_job, interval=1800, first=10)
+        logger.info("Tarea programada: Verificación de expiraciones cada 30 min.")
     
     # Handlers
     application.add_handler(CommandHandler(["start", "ayuda"], start))
