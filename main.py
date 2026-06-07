@@ -8,7 +8,7 @@ from flask import Flask
 import psycopg2
 from psycopg2 import pool
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, filters, MessageHandler
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -79,8 +79,21 @@ def admin_only(func):
         user_id = update.effective_user.id
         if user_id != ADMIN_ID:
             logger.warning(f"Intento de acceso no autorizado por ID: {user_id}")
-            await update.message.reply_text("No tienes acceso a este bot.")
+            if update.message:
+                await update.message.reply_text("No tienes acceso a este bot.")
             return
+        
+        # Verificar si está autenticado con la clave 8040
+        if not context.user_data.get('is_auth'):
+            # Permitir el comando start y la función de verificar clave
+            if update.message and update.message.text:
+                if update.message.text.startswith('/start') or func.__name__ == 'verificar_clave':
+                    return await func(update, context)
+            
+            if update.message:
+                await update.message.reply_text("🔒 Por favor, introduce la clave de acceso para continuar.")
+            return
+            
         return await func(update, context)
     return wrapper
 
@@ -88,17 +101,75 @@ def admin_only(func):
 
 @admin_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get('is_auth'):
+        await mostrar_menu(update)
+    else:
+        await update.message.reply_text("🛡️ <b>Sistema de Seguridad</b>\n\nPor favor, introduce la clave de acceso:", parse_mode='HTML')
+
+async def mostrar_menu(update: Update):
     help_text = (
         "👋 <b>Bienvenido al Gestor de Licencias</b>\n\n"
         "Comandos disponibles:\n"
         "• /generar [tipo/dias] [nota] - Generar nueva licencia\n"
         "  Ej: <code>/generar 7 Juan</code> o <code>/generar vitalicia Pedro</code>\n"
         "• /status [clave] - Ver estado de una licencia\n"
+        "• /vertodas - Ver todas las licencias registradas\n"
         "• /activar [clave] - Activar licencia\n"
         "• /desactivar [clave] - Suspender licencia\n"
         "• /ayuda - Mostrar este panel"
     )
     await update.message.reply_text(help_text, parse_mode='HTML')
+
+@admin_only
+async def verificar_clave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "8040":
+        context.user_data['is_auth'] = True
+        await update.message.reply_text("✅ <b>Acceso Concedido</b>", parse_mode='HTML')
+        await mostrar_menu(update)
+    elif not context.user_data.get('is_auth'):
+        await update.message.reply_text("❌ Clave incorrecta. Inténtalo de nuevo.")
+
+@admin_only
+async def vertodas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT clave_licencia, duracion_tipo, estado, cliente_nota, fecha_expiracion FROM licencias ORDER BY id DESC")
+            rows = cur.fetchall()
+            if not rows:
+                await update.message.reply_text("No hay licencias registradas.")
+                return
+
+            mensaje = "📋 <b>Lista de Todas las Licencias</b>\n\n"
+            for row in rows:
+                c, t, s, n, e = row
+                # Formatear fecha y hora
+                if e:
+                    exp_str = e.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    exp_str = 'Nunca'
+                
+                estado_emoji = "✅" if s == 'activa' else "🚫"
+                mensaje += (
+                    f"{estado_emoji} <b>Clave:</b> <code>{html.escape(c)}</code>\n"
+                    f"👤 <b>Cliente:</b> {html.escape(n if n else 'N/A')}\n"
+                    f"⏳ <b>Expira:</b> {exp_str}\n"
+                    f"⚙️ <b>Tipo:</b> {html.escape(t)}\n"
+                    "----------------------------\n"
+                )
+                
+                # Telegram tiene un límite de 4096 caracteres por mensaje
+                if len(mensaje) > 3500:
+                    await update.message.reply_text(mensaje, parse_mode='HTML')
+                    mensaje = ""
+            
+            if mensaje:
+                await update.message.reply_text(mensaje, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Error en vertodas: {e}")
+        await update.message.reply_text("Error al obtener las licencias.")
+    finally:
+        db_pool.putconn(conn)
 
 @admin_only
 async def generar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,7 +260,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db_pool.putconn(conn)
 
-@admin_only
 async def set_estado(update: Update, context: ContextTypes.DEFAULT_TYPE, nuevo_estado: str):
     if not context.args:
         await update.message.reply_text(f"Uso: /{context.command} [clave]")
@@ -237,8 +307,12 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler(["start", "ayuda"], start))
     application.add_handler(CommandHandler("generar", generar))
     application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("vertodas", vertodas))
     application.add_handler(CommandHandler("activar", activar))
     application.add_handler(CommandHandler("desactivar", desactivar))
+    
+    # Handler para la clave de acceso (mensajes de texto que no son comandos)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, verificar_clave))
 
     logger.info("Bot de Telegram iniciado (Polling)...")
     application.run_polling()
